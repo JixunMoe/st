@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <meta name="author" content="Jixun">
+    <title>Win32Img Patcher</title>
+    <style>
+        body {
+            font-family: sans-serif;
+        }
+
+        #file-patcher {
+            display: none;
+        }
+
+        small {
+            font-size: 50%;
+            color: gray;
+        }
+    </style>
+    <script>
+        addEventListener('DOMContentLoaded', () => {
+            const $ = id => document.getElementById(id);
+            const $dl = $('dl');
+            const revertHex = hex => hex.replace(/(..)(..)(..)(..)/, (z, a, b, c, d) => d + c + b + a);
+            const getHexBytes = hex => {
+                let result;
+                hex.replace(/(..)(..)(..)(..)/, (z, a, b, c, d) => result = [a, b, c, d]);
+                return result;
+            };
+
+            let state_flag = 0;
+
+            const $drives = $('drives');
+            $drives.onkeyup = () => {
+                $dl.style.display = 'none';
+                let flag = 0;
+                const drives = [];
+                $drives.value.replace(/[A-Z]/gi, letter => {
+                    letter = letter.toUpperCase();
+                    if (!drives.includes(letter)) {
+                        drives.push(letter);
+
+                        // A => 0; B => 1; ...
+                        const bit = letter.charCodeAt(0) - 0x41;
+                        flag |= 1 << bit;
+                    }
+                });
+
+                state_flag = 0xFFFFFFFF - flag;
+
+                // should be 8 chars; with first char been 'f'.
+                const flagHex = state_flag.toString(16);
+                const reverseHex = revertHex(flagHex);
+
+                $('mask').textContent = flagHex;
+                $('mask-inverse').textContent = reverseHex;
+
+                getHexBytes(flagHex)
+                    .map(b => b.toUpperCase())
+                    .forEach((b, i) => {
+                        $('rev' + i).textContent = b;
+                    });
+            };
+            $drives.disabled = false;
+            $drives.onkeyup(null);
+
+            if (window.File && window.FileReader && window.FileList && window.Blob && window.Uint8Array) {
+                enablePatcher();
+                $('file-patcher').id = '';
+            }
+
+            function findPattern(data, seq) {
+                for(let i = 0, j = 0; i < data.length; i++) {
+                    if (data[i] === seq[j]) {
+                        j++;
+                    } else {
+                        j = 0;
+                    }
+
+                    if (j === seq.length) {
+                        return i;
+                    }
+                }
+
+                return -1;
+            }
+
+            function enablePatcher() {
+                const $patcher = $('patcher');
+                $patcher.addEventListener('change', (e) => {
+                    $patcher.disabled = true;
+                    $dl.style.display = 'none';
+                    const files = e.target.files;
+
+                    /** @var File */
+                    const file = files[0];
+                    const reader = new FileReader();
+                    reader.onload = function () {
+                        const data = new Uint8Array(reader.result);
+
+                        const sequence = [0x85, 0xDB, 0x0F, 0x84, 0x8C, 0x01, 0x00, 0x00, 0xBE, 0x41, 0x00, 0x00, 0x00];
+                        const index = findPattern(data, sequence);
+                        if (index === -1) {
+                            alert("Could not find specified pattern\n找不到要补丁的位置。");
+                        } else {
+                            const patchData = [0x81, 0xE3, 0, 0, 0, 0, 0xBE, 0x43, 0x00, 0x00, 0x00, 0xEB, 0x1F];
+                            const patchBytes = getHexBytes(revertHex(state_flag.toString(16))).map(x => parseInt(x, 16));
+                            for (let i = 0; i < 4; i++) {
+                                patchData[i + 2] = patchBytes[i];
+                            }
+
+                            for (let i = index, j = 0; j < patchData.length; i++, j++) {
+                                data[i] = patchData[j];
+                            }
+
+                            $dl.href = window.URL.createObjectURL(new Blob([data], {type: 'octet/stream'}));
+                            $dl.download = file.name;
+                            $dl.style.display = 'unset';
+                        }
+
+                        $patcher.disabled = false;
+                        $patcher.value = null;
+                    };
+                    reader.readAsArrayBuffer(file);
+                });
+            }
+        });
+    </script>
+</head>
+<body>
+    <header>
+        <h1>Win32 Disk Image Patcher <small>by <a href="https://jixun.moe/">Jixun</a></small></h1>
+
+        <noscript>
+            <p>You need to enable JavaScript for an interactive version.</p>
+            <p>请启用 JavaScript 后查阅该页面，来对网页进行交互。</p>
+        </noscript>
+    </header>
+
+    <main>
+
+        <p><label for="drives">Problematic drives (有问题的盘符)</label>:
+            <br><input type="text" id="drives" value="A, B" disabled></p>
+
+        <h2>Disassembly view</h2>
+        <pre>004066C6 | FF15 F8CA4200 | call dword ptr ds:[<&_ZN9QComboBox5clearEv>] |<span style="color:red">
+004066CC | 81E3 <span id="mask-inverse">fcffffff</span> | and ebx,<span id="mask">fffffffc</span>                             | Disable access to those drives.
+004066D2 | BE 41000000   | mov esi,41                                   | 41:'A'
+004066D7 | EB 1F         | jmp win32diskimager.4066F8                   |</span>
+004066D9 | EB 25         | jmp win32diskimager.406700                   |</pre>
+
+        <h2>Patch file</h2>
+
+        <code>patch.1337</code>
+        <pre>&gt;win32diskimager.exe
+000066CC:85-><span class="patch-byte">81</span>
+000066CD:DB-><span class="patch-byte">E3</span>
+000066CE:0F-><span class="patch-byte" id="rev3">FC</span>
+000066CF:84-><span class="patch-byte" id="rev2">FF</span>
+000066D0:8C-><span class="patch-byte" id="rev1">FF</span>
+000066D1:01-><span class="patch-byte" id="rev0">FF</span>
+000066D2:00-><span class="patch-byte">BE</span>
+000066D3:00-><span class="patch-byte">43</span>
+000066D4:BE-><span class="patch-byte">00</span>
+000066D5:41-><span class="patch-byte">00</span>
+000066D6:00-><span class="patch-byte">00</span>
+000066D7:00-><span class="patch-byte">EB</span>
+000066D8:00-><span class="patch-byte">1F</span></pre>
+
+        <section id="file-patcher">
+            <h2>Patch it!</h2>
+            <p><input type="file" id="patcher"></p>
+            <p><a id="dl" href="#" target="_blank" style="display: none;">Download</a></p>
+        </section>
+    </main>
+</body>
+</html>
